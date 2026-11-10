@@ -1,0 +1,34 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Secalyzer - Security scanner for PHP CMS plugins, themes and web apps.
+ *
+ * This file is the CLI entrypoint. It locates the Composer autoloader
+ * (supporting both local development and global Composer installs) and
+ * delegates to the main Application class.
+ */
+
+$possibleAutoloaders = [
+    __DIR__ . '/../vendor/autoload.php',
+    __DIR__ . '/../../../autoload.php', // Composer global install path
+];
+
+$loaded = false;
+foreach ($possibleAutoloaders as $path) {
+    if (file_exists($path)) {
+        require_once $path;
+        $loaded = true;
+        break;
+    }
+}
+
+if (!$loaded) {
+    fwrite(STDERR, "Error: Composer autoloader could not be found.\n");
+    fwrite(STDERR, "Please run 'composer install' or ensure the package is properly installed via Composer.\n");
+    exit(1);
+}
+
+Src\Application::run();
