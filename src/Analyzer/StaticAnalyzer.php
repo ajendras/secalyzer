@@ -66,25 +66,19 @@ final class StaticAnalyzer
             return [];
         }
 
-        $vulnerabilities = [];
         $traverser = new NodeTraverser();
 
-        $visitor = new class($this->rules, $file, $vulnerabilities) extends NodeVisitorAbstract {
+        $visitor = new class($this->rules, $file) extends NodeVisitorAbstract {
             /** @var list<RuleInterface> */
             private array $rules;
             private string $file;
             /** @var list<Vulnerability> */
-            private array &$vulnerabilities;
+            private array $vulnerabilities = [];
 
-            /**
-             * @param list<RuleInterface> $rules
-             * @param list<Vulnerability> $vulnerabilities
-             */
-            public function __construct(array $rules, string $file, array &$vulnerabilities)
+            public function __construct(array $rules, string $file)
             {
                 $this->rules = $rules;
                 $this->file = $file;
-                $this->vulnerabilities = &$vulnerabilities;
             }
 
             public function enterNode(Node $node): ?Node
@@ -97,11 +91,19 @@ final class StaticAnalyzer
                 }
                 return null;
             }
+
+            /**
+             * @return list<Vulnerability>
+             */
+            public function getVulnerabilities(): array
+            {
+                return $this->vulnerabilities;
+            }
         };
 
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
 
-        return $vulnerabilities;
+        return $visitor->getVulnerabilities();
     }
 }
