@@ -468,10 +468,12 @@ final class Report
 
         function exportAs(format) {
             if (format === 'json') {
-                const dataStr = JSON.stringify({
-                    ...{$summary['total']} findings,
-                    vulnerabilities: vulnerabilities
-                }, null, 2);
+                const reportData = {
+                    total: {$summary['total']},
+                    vulnerabilities: vulnerabilities,
+                    generated_at: new Date().toISOString()
+                };
+                const dataStr = JSON.stringify(reportData, null, 2);
                 const blob = new Blob([dataStr], {type: 'application/json'});
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
