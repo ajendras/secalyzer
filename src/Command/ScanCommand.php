@@ -19,6 +19,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * the Scanner + appropriate Reporter.
  *
  * Supports --path, --ai-key, --format, --fix and --config.
+ * Automatically discovers and loads .secalyzer.json when present.
  */
 final class ScanCommand extends Command
 {
@@ -30,6 +31,7 @@ final class ScanCommand extends Command
             ->setHelp(<<<'HELP'
                 Scans the provided path (or current directory) for common web vulnerabilities.
                 Static analysis is always performed. AI analysis is enabled by providing --ai-key.
+                Configuration is loaded from .secalyzer.json (auto-detected) or --config.
 
                 Examples:
                   secalyzer scan ./plugin
@@ -65,7 +67,7 @@ final class ScanCommand extends Command
                 'config',
                 'c',
                 InputOption::VALUE_REQUIRED,
-                'Path to JSON config file (ignore paths, severity threshold, custom rules)'
+                'Path to JSON config file (falls back to .secalyzer.json)'
             );
     }
 
@@ -98,23 +100,26 @@ final class ScanCommand extends Command
 
         $path = realpath($rawPath) ?: $rawPath;
 
-        if ($configPath !== null && !is_readable($configPath)) {
-            $io->warning(sprintf('Config file "%s" not found or not readable. Using defaults.', $configPath));
-            $configPath = null;
-        }
+        // Load configuration (CLI --config takes precedence over auto-discovery)
+        $config = $this->loadConfiguration($configPath, $path, $io);
 
         $options = [
             'ai_key' => is_string($aiKey) && $aiKey !== '' ? $aiKey : null,
             'format' => $format,
             'fix' => $fix,
-            'config' => $configPath,
-            'severity_threshold' => 'medium', // default, can be overridden via config
+            'severity_threshold' => $config['severity_threshold'] ?? 'medium',
+            'ignore' => $config['ignore'] ?? ['vendor', 'tests', 'node_modules'],
+            'rules' => $config['rules'] ?? null,
+            'config_path' => $config['config_path'] ?? null,
         ];
 
         $io->title('Secalyzer — PHP CMS Security Scanner');
         $io->text(sprintf('Target: <info>%s</info>', $path));
         if ($options['ai_key'] !== null) {
             $io->text('AI-assisted analysis enabled (focused snippets only).');
+        }
+        if ($options['config_path'] !== null) {
+            $io->text(sprintf('Config: <info>%s</info>', basename($options['config_path'])));
         }
 
         $scanner = new Scanner();
@@ -160,5 +165,98 @@ final class ScanCommand extends Command
 
         $io->success('Scan completed successfully. No critical or high severity issues found.');
         return Command::SUCCESS;
+    }
+
+    /**
+     * Load configuration from explicit path, auto-discovered .secalyzer.json,
+     * or return defaults.
+     *
+     * @return array<string,mixed>
+     */
+    private function loadConfiguration(?string $configPath, string $scanPath, SymfonyStyle $io): array
+    {
+        if ($configPath !== null) {
+            if (is_readable($configPath)) {
+                return $this->parseConfigFile($configPath, $io);
+            }
+            $io->warning(sprintf('Config file "%s" not found or not readable. Using defaults.', $configPath));
+            return [];
+        }
+
+        $defaultPath = $this->findDefaultConfigPath($scanPath);
+        if ($defaultPath !== null) {
+            $config = $this->parseConfigFile($defaultPath, $io);
+            $config['config_path'] = $defaultPath;
+            return $config;
+        }
+
+        return [];
+    }
+
+    private function findDefaultConfigPath(string $scanPath): ?string
+    {
+        $candidates = [
+            rtrim($scanPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '.secalyzer.json',
+        ];
+
+        if (!is_dir($scanPath)) {
+            $candidates[] = dirname($scanPath) . DIRECTORY_SEPARATOR . '.secalyzer.json';
+        }
+
+        $candidates[] = getcwd() . DIRECTORY_SEPARATOR . '.secalyzer.json';
+
+        foreach (array_unique($candidates) as $candidate) {
+            if (is_file($candidate) && is_readable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function parseConfigFile(string $path, SymfonyStyle $io): array
+    {
+        $content = file_get_contents($path);
+        if ($content === false) {
+            $io->warning(sprintf('Could not read config file "%s".', $path));
+            return [];
+        }
+
+        try {
+            $config = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($config)) {
+                $io->warning('Config file must contain a JSON object.');
+                return [];
+            }
+
+            $normalized = [];
+
+            if (isset($config['ignore']) && is_array($config['ignore'])) {
+                $normalized['ignore'] = array_values(array_filter($config['ignore'], 'is_string'));
+            }
+
+            if (isset($config['severity_threshold']) && is_string($config['severity_threshold'])) {
+                $valid = ['critical', 'high', 'medium', 'low'];
+                $thresh = strtolower(trim($config['severity_threshold']));
+                if (in_array($thresh, $valid, true)) {
+                    $normalized['severity_threshold'] = $thresh;
+                } else {
+                    $io->warning('Invalid severity_threshold in config; falling back to "medium".');
+                    $normalized['severity_threshold'] = 'medium';
+                }
+            }
+
+            if (isset($config['rules']) && is_array($config['rules'])) {
+                $normalized['rules'] = array_values(array_filter($config['rules'], 'is_string'));
+            }
+
+            return $normalized;
+        } catch (\JsonException $e) {
+            $io->warning(sprintf('Invalid JSON in "%s": %s', basename($path), $e->getMessage()));
+            return [];
+        }
     }
 }

@@ -71,7 +71,7 @@ Report::toJson(), toSarif(), toHtml() and console output
 </td>
 <td valign="top">
 ⚙️ <b>Configurable</b><br>
---config JSON for ignore paths, severity thresholds and custom rules
+.secalyzer.json for ignore paths, severity thresholds and custom rules (auto-loaded or via --config)
 </td>
 <td></td>
 </tr>
@@ -122,12 +122,10 @@ secalyzer scan ./plugin --fix
 <details><summary>Advanced: use a config file and JSON output</summary>
 
 ```bash
-secalyzer scan ./cms \
-  --config ./secalyzer.json \
-  --format=json > report.json
+secalyzer scan ./cms --format=json > report.json
 ```
 
-Example `secalyzer.json` (parsed by `ScanCommand`):
+With `.secalyzer.json` (auto-discovered or passed via `--config`):
 
 ```json
 {
@@ -140,13 +138,36 @@ Example `secalyzer.json` (parsed by `ScanCommand`):
 
 ## 🔧 Configuration
 
+Secalyzer looks for `.secalyzer.json` automatically (project root or directory being scanned). You can also point to any JSON file with `--config`. The file is parsed by `ScanCommand` and merged into scan options (CLI flags take precedence). Custom rules are supported by listing fully-qualified class names that implement `RuleInterface`.
+
+**Example `.secalyzer.json`:**
+
+```json
+{
+  "ignore": ["vendor", "tests", "node_modules"],
+  "severity_threshold": "high",
+  "rules": [
+    "Src\\Rule\\XssRule",
+    "Src\\Rule\\SignatureRule"
+  ]
+}
+```
+
+| Key                    | Type    | Default                          | Description |
+|------------------------|---------|----------------------------------|-------------|
+| `ignore`               | array   | `["vendor","tests","node_modules"]` | Directory names/paths to skip |
+| `severity_threshold`   | string  | `"medium"`                       | Minimum severity to report (`low`/`medium`/`high`/`critical`) |
+| `rules`                | array   | built-in set                     | List of rule class strings (must implement `RuleInterface`) |
+
+Command-line options:
+
 | Option          | Default      | Description |
 |-----------------|--------------|-------------|
 | `path` (argument) | current working directory | Directory or single file to scan |
 | `--ai-key` / `-k` | null | OpenAI API key (must start with `sk-`); enables `AiAnalyzer` |
 | `--format` / `-f` | `console` | One of: `console`, `html`, `json`, `sarif` |
 | `--fix`         | false | Include detailed `suggestedFix` in output (always stored in `Vulnerability`) |
-| `--config` / `-c` | null | Path to JSON config for ignore paths, severity threshold and custom rules |
+| `--config` / `-c` | null | Path to JSON config (falls back to auto-discovery of `.secalyzer.json`) |
 
 ## 🧩 Architecture
 
@@ -213,7 +234,7 @@ The test suite (`StaticAnalyzerTest.php`) covers rule registration, AST node mat
 ## 📍 Roadmap
 <!-- roadmap:start -->
 - [x] **v0.1.0** — first release: 20+ Rules, AST Analysis, LLM Assistant, Fix Suggestions
-- [ ] Add configuration file support (.secalyzer.json)
+- [x] Add configuration file support (.secalyzer.json)
 - [ ] Implement 12 additional security rules (CSRF, SSRF, deserialization)
 - [ ] Generate and apply automatic patches using diff syntax
 - [ ] Add Laravel and Symfony specific rule sets

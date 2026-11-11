@@ -17,21 +17,38 @@ use Src\Rule\XssRule;
 /**
  * Uses nikic/php-parser to walk the AST and applies all registered RuleInterface
  * implementations to every node. Returns collected Vulnerability objects.
+ *
+ * Rules can be overridden via constructor to support configuration-driven
+ * custom rule sets from .secalyzer.json.
  */
 final class StaticAnalyzer
 {
     /** @var list<RuleInterface> */
     private array $rules = [];
 
-    public function __construct()
+    /**
+     * @param list<RuleInterface> $rules Optional list of rules. If empty the built-in defaults are used.
+     */
+    public function __construct(array $rules = [])
     {
-        // All deterministic rules are registered here. The project aims for 20+ rules.
-        // Additional rules can be loaded from JSON config in a future extension point.
-        $this->rules = [
-            new XssRule(),
-            new SignatureRule(),
-            // SqlInjectionRule, UnsafeDeserializationRule, WeakRandomnessRule, etc.
-        ];
+        if ($rules === []) {
+            // All deterministic rules are registered here. The project aims for 20+ rules.
+            // Additional rules can be loaded from .secalyzer.json via the "rules" key.
+            $this->rules = [
+                new XssRule(),
+                new SignatureRule(),
+                // SqlInjectionRule, UnsafeDeserializationRule, WeakRandomnessRule, etc.
+            ];
+        } else {
+            foreach ($rules as $rule) {
+                if (!$rule instanceof RuleInterface) {
+                    throw new \InvalidArgumentException(
+                        'All provided rules must implement RuleInterface.'
+                    );
+                }
+            }
+            $this->rules = $rules;
+        }
     }
 
     /**

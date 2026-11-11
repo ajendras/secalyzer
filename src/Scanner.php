@@ -8,156 +8,232 @@ use Src\Analyzer\AiAnalyzer;
 use Src\Analyzer\StaticAnalyzer;
 use Src\Model\Vulnerability;
 use Src\Report;
+use Src\Rule\RuleInterface;
+use Src\Rule\SignatureRule;
+use Src\Rule\XssRule;
 
 /**
- * Orchestrates static analysis, optional AI analysis, deduplication
- * and assembles a final Report.
+ * Main orchestrator for the security scan.
+ *
+ * Discovers PHP files (respecting ignore patterns from .secalyzer.json),
+ * runs StaticAnalyzer on each, optionally runs AiAnalyzer on files with findings,
+ * deduplicates, filters by severity threshold, and assembles the Report.
  */
 final class Scanner
 {
-    /**
-     * Scans a path (file or directory) and returns a Report.
-     *
-     * @param string $path   Directory or single PHP file
-     * @param array<string,mixed> $options
-     */
-    public function scan(string $path, array $options = []): Report
+    private AiAnalyzer $aiAnalyzer;
+
+    public function __construct()
     {
-        $staticAnalyzer = new StaticAnalyzer();
-
-        $aiKey = $options['ai_key'] ?? null;
-        $useAi = $aiKey !== null && is_string($aiKey) && str_starts_with($aiKey, 'sk-');
-
-        $vulnerabilities = [];
-        $files = $this->findPhpFiles($path);
-
-        foreach ($files as $file) {
-            $staticVulns = $staticAnalyzer->analyze($file);
-            $vulnerabilities = array_merge($vulnerabilities, $staticVulns);
-
-            if ($useAi && $staticVulns !== []) {
-                // Only run AI on files that already triggered static rules (cost optimization)
-                $snippet = $this->extractFocusedSnippet($file, $staticVulns);
-                if ($snippet !== '') {
-                    $aiAnalyzer = new AiAnalyzer();
-                    $aiVulns = $aiAnalyzer->analyze($snippet, $aiKey);
-                    $vulnerabilities = array_merge($vulnerabilities, $aiVulns);
-                }
-            }
-        }
-
-        $vulnerabilities = $this->deduplicate($vulnerabilities);
-
-        return new Report($vulnerabilities, $options);
+        $this->aiAnalyzer = new AiAnalyzer();
     }
 
     /**
-     * Recursively finds all PHP files, skipping common dependency directories.
-     *
-     * @return list<string>
+     * @param string $path Directory or file to scan
+     * @param array<string, mixed> $options Configuration options including ignore, severity_threshold, rules, ai_key etc.
      */
-    private function findPhpFiles(string $path): array
+    public function scan(string $path, array $options = []): Report
     {
-        $files = [];
+        $aiKey = $options['ai_key'] ?? null;
+        $ignore = $options['ignore'] ?? ['vendor', 'tests', 'node_modules'];
+        $severityThreshold = $options['severity_threshold'] ?? 'medium';
+        $ruleClasses = $options['rules'] ?? null;
 
-        if (is_file($path)) {
-            if (pathinfo($path, PATHINFO_EXTENSION) === 'php' && is_readable($path)) {
-                return [$path];
-            }
-            return [];
+        $staticAnalyzer = new StaticAnalyzer();
+        if (is_array($ruleClasses) && $ruleClasses !== []) {
+            $rules = $this->instantiateRules($ruleClasses);
+            $staticAnalyzer = new StaticAnalyzer($rules);
         }
 
-        if (!is_dir($path)) {
+        $phpFiles = $this->findPhpFiles($path, $ignore);
+
+        $allVulnerabilities = [];
+        foreach ($phpFiles as $file) {
+            try {
+                $staticVulns = $staticAnalyzer->analyze($file);
+                $allVulnerabilities = array_merge($allVulnerabilities, $staticVulns);
+
+                if ($aiKey !== null && $staticVulns !== []) {
+                    $snippet = $this->prepareSnippetForAi($file, $staticVulns);
+                    $aiVulns = $this->aiAnalyzer->analyze($snippet, $aiKey);
+                    $allVulnerabilities = array_merge($allVulnerabilities, $aiVulns);
+                }
+            } catch (\Throwable) {
+                continue; // skip files with parse or permission errors
+            }
+        }
+
+        $uniqueVulns = $this->deduplicateVulnerabilities($allVulnerabilities);
+        $filteredVulns = $this->filterBySeverity($uniqueVulns, $severityThreshold);
+
+        $reportOptions = [
+            'ai_key' => $aiKey !== null ? '[REDACTED]' : null,
+            'format' => $options['format'] ?? 'console',
+            'fix' => $options['fix'] ?? false,
+            'severity_threshold' => $severityThreshold,
+            'ignore' => $ignore,
+            'rules' => $ruleClasses,
+            'config_used' => true,
+            'scanned_files' => count($phpFiles),
+            'config_path' => $options['config_path'] ?? null,
+        ];
+
+        return new Report($filteredVulns, $reportOptions);
+    }
+
+    /**
+     * @param list<class-string<RuleInterface>|string> $ruleClassNames
+     * @return list<RuleInterface>
+     */
+    private function instantiateRules(array $ruleClassNames): array
+    {
+        $rules = [];
+        foreach ($ruleClassNames as $className) {
+            if (!is_string($className) || !class_exists($className)) {
+                continue;
+            }
+            $rule = new $className();
+            if ($rule instanceof RuleInterface) {
+                $rules[] = $rule;
+            }
+        }
+
+        if ($rules === []) {
+            // fallback to built-in set
+            return [
+                new XssRule(),
+                new SignatureRule(),
+            ];
+        }
+
+        return $rules;
+    }
+
+    private function findPhpFiles(string $path, array $ignorePatterns): array
+    {
+        $files = [];
+        $realPath = realpath($path) ?: $path;
+
+        if (is_file($realPath)) {
+            if (str_ends_with(strtolower($realPath), '.php')) {
+                $files[] = $realPath;
+            }
+            return $files;
+        }
+
+        if (!is_dir($realPath)) {
             return [];
         }
 
         $directoryIterator = new \RecursiveDirectoryIterator(
-            $path,
+            $realPath,
             \RecursiveDirectoryIterator::SKIP_DOTS | \RecursiveDirectoryIterator::FOLLOW_SYMLINKS
         );
-
         $iterator = new \RecursiveIteratorIterator($directoryIterator);
 
+        $rootPath = rtrim($realPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+
         foreach ($iterator as $fileInfo) {
-            if (!$fileInfo->isFile() || $fileInfo->getExtension() !== 'php') {
+            if (!$fileInfo->isFile() || !str_ends_with(strtolower($fileInfo->getFilename()), '.php')) {
                 continue;
             }
 
-            $realPath = $fileInfo->getRealPath();
-            if ($realPath === false) {
-                continue;
+            $filePath = $fileInfo->getPathname();
+            $relativePath = str_replace($rootPath, '', $filePath);
+            $pathParts = explode(DIRECTORY_SEPARATOR, $relativePath);
+
+            $isIgnored = false;
+            foreach ($ignorePatterns as $pattern) {
+                if (in_array($pattern, $pathParts, true) || str_starts_with($relativePath, $pattern . DIRECTORY_SEPARATOR)) {
+                    $isIgnored = true;
+                    break;
+                }
             }
 
-            // Skip common noise directories
-            if (preg_match('#/(vendor|node_modules|tests|tmp|cache|build|dist)/#i', $realPath)) {
-                continue;
+            if (!$isIgnored) {
+                $files[] = $filePath;
             }
-
-            $files[] = $realPath;
         }
 
         return $files;
     }
 
-    /**
-     * Extracts a focused code snippet around detected vulnerabilities.
-     * Limits context to reduce token usage for the LLM.
-     */
-    private function extractFocusedSnippet(string $file, array $vulnerabilities): string
+    private function prepareSnippetForAi(string $file, array $vulns): string
     {
-        if (!is_readable($file)) {
-            return '';
+        $content = @file_get_contents($file);
+        if ($content === false || trim($content) === '') {
+            return '// File: ' . basename($file);
         }
 
-        $lines = @file($file, FILE_IGNORE_NEW_LINES);
-        if ($lines === false || $lines === []) {
-            return '';
-        }
+        $lines = preg_split('/\r?\n/', $content);
 
-        // Collect line numbers from all vulnerabilities in this file
         $lineNumbers = [];
-        foreach ($vulnerabilities as $vuln) {
-            if ($vuln->getFile() === $file) {
+        foreach ($vulns as $vuln) {
+            if ($vuln instanceof Vulnerability) {
                 $lineNumbers[] = $vuln->getLine();
             }
         }
-
         if ($lineNumbers === []) {
-            // fallback: first 40 lines
-            return implode("\n", array_slice($lines, 0, 40));
+            $lineNumbers = [1];
         }
 
-        $startLine = max(0, min($lineNumbers) - 8);
-        $endLine = min(count($lines), max($lineNumbers) + 12);
+        $start = max(0, min($lineNumbers) - 5);
+        $end = min(count($lines), max($lineNumbers) + 25);
+        $snippetLines = array_slice($lines, $start, $end - $start);
 
-        return implode("\n", array_slice($lines, $startLine, $endLine - $startLine));
+        $header = '// File: ' . basename($file) . "\n// Lines approx " . ($start + 1) . '-' . $end . "\n";
+        return $header . implode("\n", $snippetLines);
     }
 
     /**
-     * Removes duplicate findings based on file + line + message hash.
-     *
      * @param list<Vulnerability> $vulnerabilities
      * @return list<Vulnerability>
      */
-    private function deduplicate(array $vulnerabilities): array
+    private function deduplicateVulnerabilities(array $vulnerabilities): array
     {
         $seen = [];
         $unique = [];
-
         foreach ($vulnerabilities as $vuln) {
-            $key = sprintf(
-                '%s:%d:%s',
-                $vuln->getFile(),
-                $vuln->getLine(),
-                substr(hash('xxh3', $vuln->getMessage()), 0, 12)
-            );
-
+            if (!$vuln instanceof Vulnerability) {
+                continue;
+            }
+            $key = $vuln->getType() . ':' .
+                   $vuln->getFile() . ':' .
+                   $vuln->getLine() . ':' .
+                   md5($vuln->getMessage());
             if (!isset($seen[$key])) {
                 $seen[$key] = true;
                 $unique[] = $vuln;
             }
         }
-
         return $unique;
+    }
+
+    /**
+     * @param list<Vulnerability> $vulnerabilities
+     * @return list<Vulnerability>
+     */
+    private function filterBySeverity(array $vulnerabilities, string $threshold): array
+    {
+        $levelMap = [
+            'critical' => 4,
+            'high' => 3,
+            'medium' => 2,
+            'low' => 1,
+        ];
+
+        $threshold = strtolower(trim($threshold));
+        $minLevel = $levelMap[$threshold] ?? 2;
+
+        $filtered = [];
+        foreach ($vulnerabilities as $vuln) {
+            if ($vuln instanceof Vulnerability) {
+                $level = $levelMap[$vuln->getSeverity()] ?? 0;
+                if ($level >= $minLevel) {
+                    $filtered[] = $vuln;
+                }
+            }
+        }
+        return $filtered;
     }
 }
