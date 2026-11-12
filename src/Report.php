@@ -388,30 +388,30 @@ final class Report
                 row.className = 'group hover:bg-yellow-50 dark:hover:bg-neutral-800 transition-colors';
                 row.innerHTML = `
                     <td class="px-8 py-7 font-mono text-xs uppercase tracking-widest text-violet-500">
-                        ${vuln.type}
+                        \${vuln.type}
                     </td>
                     <td class="px-8 py-7">
-                        <div class="font-medium text-neutral-700 dark:text-neutral-300">${vuln.file.split('/').pop() || vuln.file}</div>
-                        <div class="text-xs text-neutral-400 mt-0.5">line ${vuln.line}</div>
+                        <div class="font-medium text-neutral-700 dark:text-neutral-300">\${vuln.file.split('/').pop() || vuln.file}</div>
+                        <div class="text-xs text-neutral-400 mt-0.5">line \${vuln.line}</div>
                     </td>
                     <td class="px-8 py-7">
-                        <span class="inline-block px-5 py-1 text-[10px] font-semibold rounded-3xl severity-${vuln.severity}">
-                            ${vuln.severity.toUpperCase()}
+                        <span class="inline-block px-5 py-1 text-[10px] font-semibold rounded-3xl severity-\${vuln.severity}">
+                            \${vuln.severity.toUpperCase()}
                         </span>
                     </td>
                     <td class="px-8 py-7 text-neutral-600 dark:text-neutral-400 leading-snug">
-                        ${vuln.message}
+                        \${vuln.message}
                     </td>
                     <td class="px-8 py-7">
                         <div class="flex items-center gap-x-4">
                             <div class="flex-1 h-2 bg-neutral-200 dark:bg-neutral-700 rounded-3xl overflow-hidden">
-                                <div class="h-2 bg-emerald-400 rounded-3xl transition-all" style="width: ${Math.round(vuln.confidence * 100)}%"></div>
+                                <div class="h-2 bg-emerald-400 rounded-3xl transition-all" style="width: \${Math.round(vuln.confidence * 100)}%"></div>
                             </div>
-                            <span class="font-mono text-xs text-emerald-500 tabular-nums">${Math.round(vuln.confidence * 100)}%</span>
+                            <span class="font-mono text-xs text-emerald-500 tabular-nums">\${Math.round(vuln.confidence * 100)}%</span>
                         </div>
                     </td>
                     <td class="px-8 py-7 text-xs text-amber-700 dark:text-amber-300 leading-relaxed max-w-xs">
-                        ${vuln.suggested_fix.replace(/\n/g, '<br>')}
+                        \${vuln.suggested_fix.replace(/\n/g, '<br>')}
                     </td>
                 `;
                 tbody.append(row);
